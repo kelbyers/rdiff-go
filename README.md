@@ -1,7 +1,8 @@
-librsync-go
+rdiff-go
 =========
 
-librsync-go is a reimplementation of [librsync](https://github.com/librsync/librsync) in Go.
+rdiff-go is a reimplementation of
+[librsync](https://github.com/librsync/librsync)'s rdiff tool in Go.
 
 Installing
 ----------
@@ -9,7 +10,5 @@ Installing
 To install the rdiff utility:
 
 ```
-go install github.com/resin-os/librsync-go/cmd/rdiff
+go install github.com/kelbyers/rdiff-go
 ```
-
-To use it as a library simply include `github.com/resin-os/librsync-go` in your import statement

@@ -1,88 +1,49 @@
-package librsync
+package main
 
 import (
-	"encoding/binary"
-	"fmt"
-	"io"
+	"os"
+	_ "io/ioutil"
+
+	"github.com/Sirupsen/logrus"
+	"github.com/urfave/cli"
+	"github.com/resin-os/librsync-go"
 )
 
-type MagicNumber uint32
-
-const (
-	DELTA_MAGIC MagicNumber = 0x72730236
-
-	// A signature file with MD4 signatures.
-	//
-	// Backward compatible with librsync < 1.0, but strongly deprecated because
-	// it creates a security vulnerability on files containing partly untrusted
-	// data. See <https://github.com/librsync/librsync/issues/5>.
-	MD4_SIG_MAGIC MagicNumber = 0x72730136
-
-	// A signature file using the BLAKE2 hash. Supported from librsync 1.0.
-	BLAKE2_SIG_MAGIC MagicNumber = 0x72730137
-)
-
-func readParam(r io.Reader, size uint8) int64 {
-	switch size {
-	case 1:
-		var tmp uint8
-		binary.Read(r, binary.BigEndian, &tmp)
-		return int64(tmp)
-	case 2:
-		var tmp uint16
-		binary.Read(r, binary.BigEndian, &tmp)
-		return int64(tmp)
-	case 4:
-		var tmp uint32
-		binary.Read(r, binary.BigEndian, &tmp)
-		return int64(tmp)
-	case 8:
-		var tmp int64
-		binary.Read(r, binary.BigEndian, &tmp)
-		return int64(tmp)
+func CommandPatch(c *cli.Context) {
+	if len(c.Args()) > 3 {
+		logrus.Warnf("%d additional arguments passed are ignored", len(c.Args()) - 2)
 	}
-	return 0
-}
 
-func Patch(base io.ReadSeeker, delta io.Reader, out io.Writer) error {
-	var magic MagicNumber
+	if c.Args().Get(0) == "" {
+		logrus.Fatalf("Missing basis file")
+	}
 
-	err := binary.Read(delta, binary.BigEndian, &magic)
+	if c.Args().Get(1) == "" {
+		logrus.Fatalf("Missing delta file")
+	}
+	if c.Args().Get(2) == "" {
+		logrus.Fatalf("Missing newfile file")
+	}
+
+	basis, err := os.Open(c.Args().Get(0))
 	if err != nil {
-		return err
+		logrus.Fatal(err)
 	}
+	defer basis.Close()
 
-	if magic != DELTA_MAGIC {
-		return fmt.Errorf("Got magic number %x rather than expected value %x", magic, DELTA_MAGIC)
+	delta, err := os.Open(c.Args().Get(1))
+	if err != nil {
+		logrus.Fatal(err)
 	}
+	defer delta.Close()
 
-	for {
-		var op Op
-		err := binary.Read(delta, binary.BigEndian, &op)
-		if err != nil {
-			return err
-		}
-		cmd := op2cmd[op]
+	newfile, err := os.OpenFile(c.Args().Get(2), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(0600))
+	if err != nil {
+		logrus.Fatal(err)
+	}
+	defer newfile.Close()
 
-		var param1, param2 int64
-
-		if cmd.Len1 == 0 {
-			param1 = int64(cmd.Immediate)
-		} else {
-			param1 = readParam(delta, cmd.Len1)
-			param2 = readParam(delta, cmd.Len2)
-		}
-
-		switch cmd.Kind {
-		default:
-			return fmt.Errorf("Bogus command %x", cmd.Kind)
-		case KIND_LITERAL:
-			io.CopyN(out, delta, param1)
-		case KIND_COPY:
-			base.Seek(param1, io.SeekStart)
-			io.CopyN(out, base, param2)
-		case KIND_END:
-			return nil
-		}
+	if err := librsync.Patch(basis, delta, newfile); err != nil {
+		logrus.Fatal(err)
 	}
 }

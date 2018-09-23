@@ -1,98 +1,52 @@
-package librsync
+package main
 
 import (
-	"encoding/binary"
-	"fmt"
-	"io"
+	_ "io/ioutil"
+	"os"
 
-	"golang.org/x/crypto/blake2b"
-	"golang.org/x/crypto/md4"
+	"github.com/Sirupsen/logrus"
+	"github.com/kelbyers/librsync-go"
+	"github.com/urfave/cli"
 )
 
-const (
-	BLAKE2_SUM_LENGTH = 32
-	MD4_SUM_LENGTH    = 16
-)
-
-type SignatureType struct {
-	sigType    MagicNumber
-	blockLen   uint32
-	strongLen  uint32
-	strongSigs [][]byte
-	weak2block map[uint32]int
-}
-
-func CalcStrongSum(data []byte, sigType MagicNumber, strongLen uint32) ([]byte, error) {
-	switch sigType {
-	case BLAKE2_SIG_MAGIC:
-		d := blake2b.Sum256(data)
-		return d[:strongLen], nil
-	case MD4_SIG_MAGIC:
-		d := md4.New()
-		d.Write(data)
-		return d.Sum(nil)[:strongLen], nil
+func CommandSignature(c *cli.Context) {
+	if len(c.Args()) > 2 {
+		logrus.Warnf("%d additional arguments passed are ignored", len(c.Args())-2)
 	}
-	return nil, fmt.Errorf("Invalid sigType %#x", sigType)
-}
 
-func Signature(input io.Reader, output io.Writer, blockLen, strongLen uint32, sigType MagicNumber) (*SignatureType, error) {
-	var maxStrongLen uint32
+	if c.Args().Get(0) == "" {
+		logrus.Fatalf("Missing basis file")
+	}
 
-	switch sigType {
-	case BLAKE2_SIG_MAGIC:
-		maxStrongLen = BLAKE2_SUM_LENGTH
-	case MD4_SIG_MAGIC:
-		maxStrongLen = MD4_SUM_LENGTH
+	if c.Args().Get(1) == "" {
+		logrus.Fatalf("Missing signature file")
+	}
+
+	var sigType librsync.MagicNumber
+
+	switch c.String("hash") {
+	case "blake2":
+		sigType = librsync.BLAKE2_SIG_MAGIC
+	case "md4":
+		sigType = librsync.MD4_SIG_MAGIC
 	default:
-		return nil, fmt.Errorf("invalid sigType %#x", sigType)
+		logrus.Fatalf("Invalid hash type: %v", c.String("hash"))
 	}
 
-	if strongLen > maxStrongLen {
-		return nil, fmt.Errorf("invalid strongLen %d for sigType %#x", strongLen, sigType)
-	}
-
-	err := binary.Write(output, binary.BigEndian, sigType)
+	basis, err := os.Open(c.Args().Get(0))
 	if err != nil {
-		return nil, err
+		logrus.Fatal(err)
 	}
-	err = binary.Write(output, binary.BigEndian, blockLen)
+	defer basis.Close()
+
+	signature, err := os.OpenFile(c.Args().Get(1), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(0600))
 	if err != nil {
-		return nil, err
+		logrus.Fatal(err)
 	}
-	err = binary.Write(output, binary.BigEndian, strongLen)
+	defer signature.Close()
+
+	_, err = librsync.Signature(basis, signature, uint32(c.Uint("block-size")), uint32(c.Uint("sum-size")), sigType)
 	if err != nil {
-		return nil, err
+		logrus.Fatal(err)
 	}
-
-	block := make([]byte, blockLen)
-
-	var ret SignatureType
-	ret.weak2block = make(map[uint32]int)
-	ret.sigType = sigType
-	ret.strongLen = strongLen
-	ret.blockLen = blockLen
-
-	for {
-		n, err := io.ReadFull(input, block)
-		if err == io.ErrUnexpectedEOF || err == io.EOF {
-			break
-		} else if err != nil {
-			return nil, err
-		}
-		data := block[:n]
-
-		weak := WeakChecksum(data)
-		err = binary.Write(output, binary.BigEndian, weak)
-		if err != nil {
-			return nil, err
-		}
-
-		strong, _ := CalcStrongSum(data, sigType, strongLen)
-		output.Write(strong)
-
-		ret.weak2block[weak] = len(ret.strongSigs)
-		ret.strongSigs = append(ret.strongSigs, strong)
-	}
-
-	return &ret, nil
 }
